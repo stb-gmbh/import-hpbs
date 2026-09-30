@@ -677,6 +677,41 @@ FORM alv_ausgabe.
         CHANGING
           t_table      = t_data.
       lo_spalten = lo_alv->get_columns( ).
+
+      PERFORM alv_spalte_beschriften USING lo_spalten
+        'ZEILE' 'Excelzeile'
+        'Excel-Zeile' 'Zeilennummer in der Excel-Datei'.
+      PERFORM alv_spalte_beschriften USING lo_spalten
+        'WPN' 'Workday-ID'
+        'Workday-ID (WPN)' 'Workday-ID (WPN)'.
+      PERFORM alv_spalte_beschriften USING lo_spalten
+        'BETRAG' 'AEG Brutto'
+        'AEG Brutto' 'Zahlungsbetrag AEG Brutto'.
+      PERFORM alv_spalte_beschriften USING lo_spalten
+        'PERNR' 'SAP-PersNr'
+        'SAP-Personalnummer' 'SAP-Personalnummer'.
+      PERFORM alv_spalte_beschriften USING lo_spalten
+        'DATUM' 'Buch.-Tag'
+        'Buchungsdatum' 'Buchungsdatum (letzter aktiver Tag)'.
+      PERFORM alv_spalte_beschriften USING lo_spalten
+        'WERKS' 'PersBer'
+        'Personalbereich' 'SAP-Personalbereich'.
+      PERFORM alv_spalte_beschriften USING lo_spalten
+        'BTRTL' 'PersTBer'
+        'Personalteilbereich' 'SAP-Personalteilbereich'.
+      PERFORM alv_spalte_beschriften USING lo_spalten
+        'LGART' 'Lohnart'
+        'Lohnart IT0015' 'Lohnart fuer IT0015'.
+      PERFORM alv_spalte_beschriften USING lo_spalten
+        'WAERS' 'Waehrung'
+        'Waehrung' 'Waehrung des Zahlungsbetrags'.
+      PERFORM alv_spalte_beschriften USING lo_spalten
+        'STATUS' 'Status'
+        'Buchungsstatus' 'Pruef- und Buchungsstatus'.
+      PERFORM alv_spalte_beschriften USING lo_spalten
+        'MELDUNG' 'Meldung'
+        'Verarbeitungsmeldung' 'Pruefergebnis / Verarbeitungsmeldung'.
+
       lo_spalten->set_optimize( abap_true ).
       lo_funktionen = lo_alv->get_functions( ).
       lo_funktionen->set_all( abap_true ).
@@ -685,4 +720,23 @@ FORM alv_ausgabe.
       l_meldung = lo_error->get_text( ).
       MESSAGE l_meldung TYPE 'S' DISPLAY LIKE 'E'.
   ENDTRY.
+ENDFORM.
+
+*----------------------------------------------------------------------*
+* Form alv_spalte_beschriften
+*----------------------------------------------------------------------*
+FORM alv_spalte_beschriften
+  USING po_spalten TYPE REF TO cl_salv_columns_table
+        VALUE(p_name) TYPE salv_de_column
+        VALUE(p_kurz) TYPE scrtext_s
+        VALUE(p_mittel) TYPE scrtext_m
+        VALUE(p_lang) TYPE scrtext_l
+  RAISING cx_salv_not_found.
+
+  DATA lo_spalte TYPE REF TO cl_salv_column.
+
+  lo_spalte = po_spalten->get_column( p_name ).
+  lo_spalte->set_short_text( p_kurz ).
+  lo_spalte->set_medium_text( p_mittel ).
+  lo_spalte->set_long_text( p_lang ).
 ENDFORM.
