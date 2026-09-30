@@ -1,417 +1,121 @@
+*&---------------------------------------------------------------------*
+*& Report ZHR_STOERFALL_IT0015
+*& Import einer Stoerfalldatei nach IT0015 mit abap2xlsx
+*&---------------------------------------------------------------------*
 REPORT zhr_stoerfall_it0015.
-* ABAP >= 7.40; abap2xlsx; SAP GUI; classic SAP HCM.
-* Keine direkten Updates auf PA0015. Siehe begleitende Anleitung.
+
+*=======================================================================
+* Datendeklarationen
+*=======================================================================
 TABLES: pa0001.
-PARAMETERS: p_file TYPE string LOWER CASE OBLIGATORY,
+
+TYPES: BEGIN OF ty_data,
+         zeile   TYPE i,
+         wpn     TYPE string,
+         betrag  TYPE p0015-betrg,
+         pernr   TYPE pernr_d,
+         datum   TYPE sy-datum,
+         werks   TYPE p0001-werks,
+         btrtl   TYPE p0001-btrtl,
+         lgart   TYPE p0015-lgart,
+         waers   TYPE p0015-waers,
+         status  TYPE c LENGTH 10,
+         meldung TYPE string,
+       END OF ty_data.
+
+DATA: t_data      TYPE STANDARD TABLE OF ty_data,
+      wa_data     TYPE ty_data,
+      l_fehler    TYPE string,
+      lo_fehler   TYPE REF TO cx_root.
+
+*=======================================================================
+* Selektionsbild
+*=======================================================================
+PARAMETERS: p_file  TYPE string LOWER CASE OBLIGATORY,
             p_keydt TYPE sy-datum OBLIGATORY DEFAULT sy-datum,
-            p_test AS CHECKBOX DEFAULT 'X'.
+            p_test  AS CHECKBOX DEFAULT 'X'.
+
 SELECT-OPTIONS: s_west FOR pa0001-btrtl NO INTERVALS,
                 s_ost  FOR pa0001-btrtl NO INTERVALS.
 
-TYPES: BEGIN OF ty_row,
-         zeile TYPE i,
-         wpn TYPE string,
-         betrag TYPE p0015-betrg,
-         pernr TYPE pernr_d,
-         datum TYPE sy-datum,
-         werks TYPE p0001-werks,
-         btrtl TYPE p0001-btrtl,
-         lgart TYPE p0015-lgart,
-         waers TYPE p0015-waers,
-         status TYPE c LENGTH 10,
-         meldung TYPE string,
-       END OF ty_row.
-DATA gt_rows TYPE STANDARD TABLE OF ty_row WITH DEFAULT KEY.
-
-CLASS lcx_error DEFINITION INHERITING FROM cx_static_check.
-  PUBLIC SECTION.
-    DATA detail TYPE string READ-ONLY.
-    METHODS constructor IMPORTING text TYPE string.
-ENDCLASS.
-CLASS lcx_error IMPLEMENTATION.
-  METHOD constructor.
-    super->constructor( ).
-    detail = text.
-  ENDMETHOD.
-ENDCLASS.
-
-CLASS lcl_app DEFINITION FINAL.
-  PUBLIC SECTION.
-    CLASS-METHODS run RAISING cx_static_check.
-  PRIVATE SECTION.
-    CLASS-METHODS cell IMPORTING sheet TYPE REF TO zcl_excel_worksheet
-                                col TYPE i row TYPE i
-                      RETURNING VALUE(value) TYPE string
-                      RAISING zcx_excel lcx_error.
-    CLASS-METHODS read_it IMPORTING pernr TYPE pernr_d infty TYPE infty
-                                   begda TYPE sy-datum endda TYPE sy-datum
-                         CHANGING records TYPE STANDARD TABLE
-                         RAISING lcx_error.
-    CLASS-METHODS prepare CHANGING item TYPE ty_row RAISING lcx_error.
-    CLASS-METHODS process CHANGING item TYPE ty_row.
-ENDCLASS.
-
-CLASS lcl_app IMPLEMENTATION.
-  METHOD cell.
-    DATA raw TYPE zexcel_cell_value.
-    DATA formula TYPE zexcel_cell_formula.
-    sheet->get_cell( EXPORTING ip_column = col ip_row = row
-                     IMPORTING ep_value = raw ep_formula = formula ).
-    IF formula IS NOT INITIAL.
-      RAISE EXCEPTION TYPE lcx_error
-        EXPORTING text = |Zeile { row }: Formeln nicht erlaubt; Werte exportieren.|.
-    ENDIF.
-    value = raw.
-    CONDENSE value.
-  ENDMETHOD.
-
-  METHOD read_it.
-    DATA rc TYPE sy-subrc.
-    CLEAR records.
-    CALL FUNCTION 'HR_READ_INFOTYPE'
-      EXPORTING pernr = pernr infty = infty begda = begda endda = endda
-                bypass_buffer = 'X'
-      IMPORTING subrc = rc
-      TABLES infty_tab = records
-      EXCEPTIONS infty_not_found = 1 OTHERS = 2.
-    IF sy-subrc <> 0 OR rc <> 0.
-      RAISE EXCEPTION TYPE lcx_error
-        EXPORTING text = |IT{ infty }: Lesen fehlgeschlagen/keine Berechtigung (RC { rc }).|.
-    ENDIF.
-  ENDMETHOD.
-
-  METHOD prepare.
-    DATA: ids TYPE SORTED TABLE OF pernr_d WITH UNIQUE KEY table_line,
-          short_id TYPE pa0105-usrid,
-          long_id TYPE pa0105-usrid_long,
-          it105 TYPE STANDARD TABLE OF p0105,
-          it000 TYPE STANDARD TABLE OF p0000,
-          it001 TYPE STANDARD TABLE OF p0001,
-          it015 TYPE STANDARD TABLE OF p0015,
-          next_day TYPE sy-datum,
-          count TYPE i,
-          matches TYPE i.
-    CLEAR: item-pernr, item-datum, item-werks, item-btrtl,
-           item-lgart, item-waers.
-    IF item-wpn IS INITIAL OR strlen( item-wpn ) > 30.
-      RAISE EXCEPTION TYPE lcx_error EXPORTING text = 'WPN fehlt/ist zu lang.'.
-    ENDIF.
-    short_id = item-wpn.
-    long_id = item-wpn.
-* SQL nur Kandidatensuche. Keine Stammdatenverwendung ohne HR-Lesepruefung.
-* Historische WDID-Saetze einschliessen, da ausgeschiedene Mitarbeiter.
-    SELECT DISTINCT pernr FROM pa0105 INTO TABLE ids
-      WHERE subty = 'WDID' AND sprps = space
-        AND ( usrid = short_id OR usrid_long = long_id ).
-    IF lines( ids ) <> 1.
-      RAISE EXCEPTION TYPE lcx_error
-        EXPORTING text = 'WDID fehlt oder ist mehreren Personalnummern zugeordnet.'.
-    ENDIF.
-    READ TABLE ids INDEX 1 INTO item-pernr.
-    read_it( EXPORTING pernr = item-pernr infty = '0105'
-                       begda = '18000101' endda = '99991231'
-             CHANGING records = it105 ).
-    LOOP AT it105 TRANSPORTING NO FIELDS
-      WHERE subty = 'WDID' AND sprps = space
-        AND ( usrid = short_id OR usrid_long = long_id ).
-      matches = matches + 1.
-    ENDLOOP.
-    IF matches = 0.
-      RAISE EXCEPTION TYPE lcx_error
-        EXPORTING text = 'WDID nicht berechtigt lesbar.'.
-    ENDIF.
-    read_it( EXPORTING pernr = item-pernr infty = '0000'
-                       begda = '18000101' endda = p_keydt
-             CHANGING records = it000 ).
-    DELETE it000 WHERE sprps <> space.
-* Zum Stichtag muss der Mitarbeiter ausgetreten sein (STAT2 = 0).
-    CLEAR count.
-    LOOP AT it000 INTO DATA(action)
-      WHERE begda <= p_keydt AND endda >= p_keydt.
-      count = count + 1.
-      IF action-stat2 <> '0'.
-        RAISE EXCEPTION TYPE lcx_error
-          EXPORTING text = 'Am Stichtag nicht ausgetreten (STAT2 <> 0).'.
-      ENDIF.
-    ENDLOOP.
-    IF count <> 1.
-      RAISE EXCEPTION TYPE lcx_error
-        EXPORTING text = 'IT0000 am Stichtag fehlt/ist mehrdeutig.'.
-    ENDIF.
-* Letzter aktiver Kalendertag. Kein Arbeitstags-/Feiertagskalender.
-    LOOP AT it000 INTO action WHERE stat2 = '3' AND endda < p_keydt.
-      IF action-endda > item-datum.
-        item-datum = action-endda.
-      ENDIF.
-    ENDLOOP.
-    IF item-datum IS INITIAL.
-      RAISE EXCEPTION TYPE lcx_error
-        EXPORTING text = 'Kein letzter aktiver Tag vor Stichtag gefunden.'.
-    ENDIF.
-    next_day = item-datum + 1.
-    CLEAR count.
-    LOOP AT it000 INTO action
-      WHERE begda <= next_day AND endda >= next_day.
-      count = count + 1.
-      IF action-stat2 <> '0'.
-        RAISE EXCEPTION TYPE lcx_error
-          EXPORTING text = 'Auf letzten aktiven Tag folgt kein Austritt.'.
-      ENDIF.
-    ENDLOOP.
-    IF count <> 1.
-      RAISE EXCEPTION TYPE lcx_error
-        EXPORTING text = 'Austrittsbeginn fehlt/ist mehrdeutig.'.
-    ENDIF.
-    CLEAR count.
-    LOOP AT it000 INTO action
-      WHERE begda <= item-datum AND endda >= item-datum.
-      count = count + 1.
-      IF action-stat2 <> '3'.
-        RAISE EXCEPTION TYPE lcx_error
-          EXPORTING text = 'Buchungstag ist nicht aktiv.'.
-      ENDIF.
-    ENDLOOP.
-    IF count <> 1.
-      RAISE EXCEPTION TYPE lcx_error
-        EXPORTING text = 'Aktivstatus am Buchungstag nicht eindeutig.'.
-    ENDIF.
-    CLEAR count.
-    LOOP AT it105 TRANSPORTING NO FIELDS
-      WHERE subty = 'WDID' AND sprps = space
-        AND begda <= item-datum AND endda >= item-datum
-        AND ( usrid = short_id OR usrid_long = long_id ).
-      count = count + 1.
-    ENDLOOP.
-    IF count <> 1.
-      RAISE EXCEPTION TYPE lcx_error
-        EXPORTING text = 'WDID am Buchungstag fehlt/ist mehrdeutig.'.
-    ENDIF.
-    read_it( EXPORTING pernr = item-pernr infty = '0001'
-                       begda = item-datum endda = item-datum
-             CHANGING records = it001 ).
-    DELETE it001 WHERE sprps <> space.
-    IF lines( it001 ) <> 1.
-      RAISE EXCEPTION TYPE lcx_error
-        EXPORTING text = 'IT0001 am Buchungstag fehlt/ist mehrdeutig.'.
-    ENDIF.
-    READ TABLE it001 INDEX 1 INTO DATA(org).
-    item-werks = org-werks.
-    item-btrtl = org-btrtl.
-    IF s_west[] IS NOT INITIAL AND org-btrtl IN s_west.
-      item-lgart = '6600'.
-    ENDIF.
-    IF s_ost[] IS NOT INITIAL AND org-btrtl IN s_ost.
-      IF item-lgart IS NOT INITIAL.
-        RAISE EXCEPTION TYPE lcx_error
-          EXPORTING text = 'Personalteilbereich gleichzeitig West und Ost.'.
-      ENDIF.
-      item-lgart = '6610'.
-    ENDIF.
-    IF item-lgart IS INITIAL.
-      RAISE EXCEPTION TYPE lcx_error
-        EXPORTING text = |Keine West/Ost-Zuordnung fuer { org-werks }/{ org-btrtl }.|.
-    ENDIF.
-* Quelle enthaelt keine Waehrung; fachliche Annahme EUR.
-    item-waers = 'EUR'.
-* Vorhandene Saetze auch mit anderem Betrag blockieren, niemals addieren.
-* Bei leerem IT0015 ist RC 4 regulaer. Fehler/Teilberechtigung nicht ignorieren.
-    DATA rc TYPE sy-subrc.
-    CALL FUNCTION 'HR_READ_INFOTYPE'
-      EXPORTING pernr = item-pernr infty = '0015'
-                begda = item-datum endda = item-datum bypass_buffer = 'X'
-      IMPORTING subrc = rc
-      TABLES infty_tab = it015
-      EXCEPTIONS infty_not_found = 1 OTHERS = 2.
-    IF sy-subrc <> 0 OR ( rc <> 0 AND rc <> 4 ).
-      RAISE EXCEPTION TYPE lcx_error
-        EXPORTING text = 'IT0015 nicht vollstaendig berechtigt lesbar.'.
-    ENDIF.
-    LOOP AT it015 TRANSPORTING NO FIELDS WHERE lgart = item-lgart.
-      RAISE EXCEPTION TYPE lcx_error
-        EXPORTING text = 'IT0015 fuer Datum/Lohnart bereits vorhanden; manuell pruefen.'.
-    ENDLOOP.
-  ENDMETHOD.
-
-  METHOD process.
-    DATA: ret TYPE bapireturn1, record TYPE p0015,
-          locked TYPE abap_bool, original TYPE ty_row.
-    original = item.
-    TRY.
-        CALL FUNCTION 'BAPI_EMPLOYEE_ENQUEUE'
-          EXPORTING number = item-pernr IMPORTING return = ret.
-        IF ret-type CA 'AEX'.
-          RAISE EXCEPTION TYPE lcx_error EXPORTING text = CONV string( ret-message ).
-        ENDIF.
-        locked = abap_true.
-* Erneute Ableitung/Dublettenpruefung innerhalb der Mitarbeitersperre.
-        prepare( CHANGING item = item ).
-        IF item-pernr <> original-pernr OR item-datum <> original-datum
-           OR item-lgart <> original-lgart OR item-btrtl <> original-btrtl
-           OR item-werks <> original-werks.
-          RAISE EXCEPTION TYPE lcx_error
-            EXPORTING text = 'Stammdaten seit Vorpruefung geaendert; neu starten.'.
-        ENDIF.
-        record-pernr = item-pernr.
-        record-infty = '0015'.
-        record-subty = item-lgart.
-        record-lgart = item-lgart.
-        record-begda = item-datum.
-        record-endda = item-datum.
-        record-betrg = item-betrag.
-        record-waers = item-waers.
-        CLEAR ret.
-        CALL FUNCTION 'HR_INFOTYPE_OPERATION'
-          EXPORTING infty = '0015' number = record-pernr
-                    subtype = record-subty validitybegin = record-begda
-                    validityend = record-endda record = record
-                    operation = 'INS' tclas = 'A' dialog_mode = '0'
-                    nocommit = 'X'
-          IMPORTING return = ret
-          EXCEPTIONS OTHERS = 1.
-        IF sy-subrc <> 0 OR ret-type CA 'AEX'.
-          RAISE EXCEPTION TYPE lcx_error
-            EXPORTING text = |IT0015 fehlgeschlagen: { ret-message }|.
-        ENDIF.
-        COMMIT WORK AND WAIT.
-        IF sy-subrc <> 0.
-          RAISE EXCEPTION TYPE lcx_error
-            EXPORTING text = 'Update fehlgeschlagen; SM13 und PA20 pruefen.'.
-        ENDIF.
-        item-status = 'GEBUCHT'.
-        item-meldung = |IT0015 angelegt. { ret-message }|.
-      CATCH lcx_error INTO DATA(err).
-        ROLLBACK WORK.
-        item-status = 'FEHLER'.
-        item-meldung = err->detail.
-      CATCH cx_root INTO DATA(unexpected).
-        ROLLBACK WORK.
-        item-status = 'FEHLER'.
-        item-meldung = unexpected->get_text( ).
-    ENDTRY.
-    IF locked = abap_true.
-      CALL FUNCTION 'BAPI_EMPLOYEE_DEQUEUE'
-        EXPORTING number = original-pernr.
-    ENDIF.
-    CALL FUNCTION 'HR_PSBUFFER_INITIALIZE'.
-  ENDMETHOD.
-
-  METHOD run.
-    DATA reader TYPE REF TO zif_excel_reader.
-    CREATE OBJECT reader TYPE zcl_excel_reader_2007.
-    DATA(book) = reader->load_file( i_filename = p_file
-                                    i_from_applserver = abap_false ).
-    DATA(sheet) = book->get_worksheet_by_index( iv_index = 1 ).
-    IF sheet->get_title( ) <> 'ExportData'.
-      RAISE EXCEPTION TYPE lcx_error
-        EXPORTING text = 'Erstes Tabellenblatt muss ExportData heissen.'.
-    ENDIF.
-    DATA: col_wpn TYPE i, col_amt TYPE i.
-    DO sheet->get_highest_column( ) TIMES.
-      DATA(col) = sy-index.
-      DATA(header) = cell( sheet = sheet col = col row = 1 ).
-      CASE header.
-        WHEN 'WPN'.
-          IF col_wpn <> 0.
-            RAISE EXCEPTION TYPE lcx_error EXPORTING text = 'WPN-Kopf doppelt.'.
-          ENDIF.
-          col_wpn = col.
-        WHEN 'AEG Brutto'.
-          IF col_amt <> 0.
-            RAISE EXCEPTION TYPE lcx_error EXPORTING text = 'Betragskopf doppelt.'.
-          ENDIF.
-          col_amt = col.
-      ENDCASE.
-    ENDDO.
-    IF col_wpn = 0 OR col_amt = 0.
-      RAISE EXCEPTION TYPE lcx_error
-        EXPORTING text = 'Spalten WPN/AEG Brutto fehlen in Zeile 1.'.
-    ENDIF.
-    DATA total_rows TYPE i.
-    total_rows = sheet->get_highest_row( ) - 1.
-    DO total_rows TIMES.
-      DATA(item) = VALUE ty_row( zeile = sy-index + 1 ).
-      TRY.
-          item-wpn = cell( sheet = sheet col = col_wpn row = item-zeile ).
-          DATA(amount) = cell( sheet = sheet col = col_amt row = item-zeile ).
-          IF item-wpn IS INITIAL AND amount IS INITIAL.
-            CONTINUE.
-          ENDIF.
-          FIND REGEX '^[0-9]+$' IN item-wpn.
-          IF sy-subrc <> 0.
-            RAISE EXCEPTION TYPE lcx_error
-              EXPORTING text = 'WPN muss eine Ziffernfolge sein (keine Exponentialzahl).'.
-          ENDIF.
-* Numerische XLSX-Zellen liefern Dezimalpunkt, unabhaengig von SAP-Benutzerformat.
-* Keine stillschweigende Rundung oder Tausenderseparator-Interpretation.
-          FIND REGEX '^[+-]?[0-9]+([.][0-9]{1,2})?$' IN amount.
-          IF sy-subrc <> 0.
-            RAISE EXCEPTION TYPE lcx_error
-              EXPORTING text = 'AEG Brutto: Zahl mit Dezimalpunkt und max. 2 Nachkommastellen erforderlich.'.
-          ENDIF.
-          item-betrag = CONV decfloat34( amount ).
-          IF item-betrag = 0.
-            RAISE EXCEPTION TYPE lcx_error EXPORTING text = 'Nullbetrag nicht gebucht.'.
-          ENDIF.
-          prepare( CHANGING item = item ).
-          item-status = 'BEREIT'.
-          item-meldung = 'Fachliche Vorpruefung erfolgreich.'.
-        CATCH lcx_error INTO DATA(err).
-          item-status = 'FEHLER'. item-meldung = err->detail.
-        CATCH cx_sy_conversion_error INTO DATA(conv_err).
-          item-status = 'FEHLER'. item-meldung = conv_err->get_text( ).
-      ENDTRY.
-      APPEND item TO gt_rows.
-    ENDDO.
-* Alle gleichen Zielschluessel blockieren, auch bei verschiedenen Betraegen.
-    LOOP AT gt_rows ASSIGNING FIELD-SYMBOL(<row>) WHERE status = 'BEREIT'.
-      DATA(hits) = 0.
-      LOOP AT gt_rows TRANSPORTING NO FIELDS
-        WHERE pernr = <row>-pernr AND datum = <row>-datum
-          AND lgart = <row>-lgart.
-        hits = hits + 1.
-      ENDLOOP.
-      IF hits > 1.
-        <row>-status = 'FEHLER'.
-        <row>-meldung = 'Mehrere Excel-Zeilen fuer dieselbe PerNr/Datum/Lohnart.'.
-      ENDIF.
-    ENDLOOP.
-    LOOP AT gt_rows ASSIGNING <row> WHERE status = 'BEREIT'.
-      IF p_test = abap_true.
-        <row>-status = 'TEST'.
-        <row>-meldung = 'Vorpruefung OK; keine Buchung, keine SAP-Schreibpruefung.'.
-      ELSE.
-        process( CHANGING item = <row> ).
-      ENDIF.
-    ENDLOOP.
-    DATA alv TYPE REF TO cl_salv_table.
-    cl_salv_table=>factory( IMPORTING r_salv_table = alv
-                            CHANGING t_table = gt_rows ).
-    alv->get_columns( )->set_optimize( abap_true ).
-    alv->get_functions( )->set_all( abap_true ).
-    alv->display( ).
-  ENDMETHOD.
-ENDCLASS.
-
+*----------------------------------------------------------------------*
 AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
-  DATA: files TYPE filetable, rc TYPE i.
-  cl_gui_frontend_services=>file_open_dialog(
-    EXPORTING file_filter = 'Excel (*.xlsx)|*.xlsx|'
-    CHANGING file_table = files rc = rc
-    EXCEPTIONS OTHERS = 1 ).
-  IF sy-subrc = 0 AND rc > 0.
-    READ TABLE files INDEX 1 INTO DATA(file).
-    p_file = file-filename.
+*----------------------------------------------------------------------*
+  PERFORM datei_auswaehlen.
+
+*----------------------------------------------------------------------*
+AT SELECTION-SCREEN.
+*----------------------------------------------------------------------*
+  PERFORM selektion_pruefen.
+
+*----------------------------------------------------------------------*
+START-OF-SELECTION.
+*----------------------------------------------------------------------*
+  REFRESH t_data.
+  CLEAR l_fehler.
+
+  TRY.
+      PERFORM excel_einlesen CHANGING l_fehler.
+    CATCH cx_root INTO lo_fehler.
+      l_fehler = lo_fehler->get_text( ).
+  ENDTRY.
+
+  IF l_fehler IS NOT INITIAL.
+    MESSAGE l_fehler TYPE 'S' DISPLAY LIKE 'E'.
+  ELSE.
+    PERFORM daten_pruefen.
+    PERFORM dubletten_pruefen.
+    PERFORM daten_verarbeiten.
   ENDIF.
 
-AT SELECTION-SCREEN.
-  IF sy-batch = abap_true.
+*----------------------------------------------------------------------*
+END-OF-SELECTION.
+*----------------------------------------------------------------------*
+  CHECK l_fehler IS INITIAL.
+  CHECK t_data IS NOT INITIAL.
+  PERFORM alv_ausgabe.
+
+*=======================================================================
+* Unterprogramme (keine Includes)
+*=======================================================================
+
+*----------------------------------------------------------------------*
+* Form datei_auswaehlen
+*----------------------------------------------------------------------*
+FORM datei_auswaehlen.
+  DATA: lt_files TYPE filetable,
+        wa_file  TYPE file_table,
+        l_rc     TYPE i.
+
+  CALL METHOD cl_gui_frontend_services=>file_open_dialog
+    EXPORTING
+      file_filter = 'Excel (*.xlsx)|*.xlsx|'
+    CHANGING
+      file_table  = lt_files
+      rc          = l_rc
+    EXCEPTIONS
+      OTHERS      = 1.
+
+  IF sy-subrc EQ 0 AND l_rc GT 0.
+    READ TABLE lt_files INDEX 1 INTO wa_file.
+    IF sy-subrc EQ 0.
+      p_file = wa_file-filename.
+    ENDIF.
+  ENDIF.
+ENDFORM.
+
+*----------------------------------------------------------------------*
+* Form selektion_pruefen
+*----------------------------------------------------------------------*
+FORM selektion_pruefen.
+  IF sy-batch EQ abap_true.
     MESSAGE 'Dieser Report benoetigt SAP GUI fuer den lokalen XLSX-Upload.' TYPE 'E'.
   ENDIF.
   IF s_west[] IS INITIAL AND s_ost[] IS INITIAL.
     MESSAGE 'Mindestens eine West-/Ost-Zuordnung eingeben.' TYPE 'E'.
   ENDIF.
   LOOP AT s_west.
-    IF s_west-sign <> 'I' OR s_west-option <> 'EQ'.
+    IF s_west-sign NE 'I' OR s_west-option NE 'EQ'.
       MESSAGE 'West: nur einzelne eingeschlossene Teilbereiche erlaubt.' TYPE 'E'.
     ENDIF.
     IF s_ost[] IS NOT INITIAL AND s_west-low IN s_ost.
@@ -419,16 +123,566 @@ AT SELECTION-SCREEN.
     ENDIF.
   ENDLOOP.
   LOOP AT s_ost.
-    IF s_ost-sign <> 'I' OR s_ost-option <> 'EQ'.
+    IF s_ost-sign NE 'I' OR s_ost-option NE 'EQ'.
       MESSAGE 'Ost: nur einzelne eingeschlossene Teilbereiche erlaubt.' TYPE 'E'.
     ENDIF.
   ENDLOOP.
+ENDFORM.
 
-START-OF-SELECTION.
+*----------------------------------------------------------------------*
+* Form zelle_lesen
+*----------------------------------------------------------------------*
+FORM zelle_lesen USING    po_blatt TYPE REF TO zcl_excel_worksheet
+                         p_spalte TYPE i
+                         p_zeile TYPE i
+                CHANGING p_wert TYPE string
+                         p_fehler TYPE string.
+  DATA: l_wert   TYPE zexcel_cell_value,
+        l_formel TYPE zexcel_cell_formula,
+        lo_error TYPE REF TO cx_root.
+
+  CLEAR: p_wert, p_fehler.
   TRY.
-      lcl_app=>run( ).
-    CATCH lcx_error INTO DATA(error).
-      MESSAGE error->detail TYPE 'S' DISPLAY LIKE 'E'.
-    CATCH cx_root INTO DATA(unexpected).
-      MESSAGE unexpected->get_text( ) TYPE 'S' DISPLAY LIKE 'E'.
+      CALL METHOD po_blatt->get_cell
+        EXPORTING
+          ip_column = p_spalte
+          ip_row    = p_zeile
+        IMPORTING
+          ep_value   = l_wert
+          ep_formula = l_formel.
+      IF l_formel IS NOT INITIAL.
+        p_fehler = 'Formeln nicht erlaubt; Excel-Werte exportieren.'.
+        RETURN.
+      ENDIF.
+      p_wert = l_wert.
+      CONDENSE p_wert.
+    CATCH cx_root INTO lo_error.
+      p_fehler = lo_error->get_text( ).
   ENDTRY.
+ENDFORM.
+
+*----------------------------------------------------------------------*
+* Form excel_einlesen
+*----------------------------------------------------------------------*
+FORM excel_einlesen CHANGING p_fehler TYPE string.
+  DATA: lo_reader TYPE REF TO zif_excel_reader,
+        lo_excel  TYPE REF TO zcl_excel,
+        lo_blatt  TYPE REF TO zcl_excel_worksheet,
+        l_titel   TYPE zexcel_sheet_title,
+        l_spalten TYPE i,
+        l_zeilen  TYPE i,
+        l_spalte  TYPE i,
+        l_zeile   TYPE i,
+        l_wpn_col TYPE i,
+        l_bet_col TYPE i,
+        l_kopf    TYPE string,
+        l_betrag  TYPE string,
+        l_meldung TYPE string,
+        wa_import TYPE ty_data.
+
+  CLEAR p_fehler.
+  CREATE OBJECT lo_reader TYPE zcl_excel_reader_2007.
+  lo_excel = lo_reader->load_file(
+    i_filename        = p_file
+    i_from_applserver = abap_false ).
+  lo_blatt = lo_excel->get_worksheet_by_index( iv_index = 1 ).
+  l_titel = lo_blatt->get_title( ).
+  IF l_titel NE 'ExportData'.
+    p_fehler = 'Erstes Tabellenblatt muss ExportData heissen.'.
+    RETURN.
+  ENDIF.
+
+  l_spalten = lo_blatt->get_highest_column( ).
+  DO l_spalten TIMES.
+    l_spalte = sy-index.
+    PERFORM zelle_lesen USING lo_blatt l_spalte 1
+                       CHANGING l_kopf p_fehler.
+    IF p_fehler IS NOT INITIAL.
+      RETURN.
+    ENDIF.
+    CASE l_kopf.
+      WHEN 'WPN'.
+        IF l_wpn_col NE 0.
+          p_fehler = 'WPN-Kopf doppelt.'.
+          RETURN.
+        ENDIF.
+        l_wpn_col = l_spalte.
+      WHEN 'AEG Brutto'.
+        IF l_bet_col NE 0.
+          p_fehler = 'Betragskopf doppelt.'.
+          RETURN.
+        ENDIF.
+        l_bet_col = l_spalte.
+    ENDCASE.
+  ENDDO.
+  IF l_wpn_col EQ 0 OR l_bet_col EQ 0.
+    p_fehler = 'Spalten WPN/AEG Brutto fehlen in Zeile 1.'.
+    RETURN.
+  ENDIF.
+
+  l_zeilen = lo_blatt->get_highest_row( ).
+  l_zeilen = l_zeilen - 1.
+  DO l_zeilen TIMES.
+    l_zeile = sy-index + 1.
+    CLEAR: wa_import, l_betrag, l_meldung.
+    wa_import-zeile = l_zeile.
+    PERFORM zelle_lesen USING lo_blatt l_wpn_col l_zeile
+                       CHANGING wa_import-wpn l_meldung.
+    IF l_meldung IS INITIAL.
+      PERFORM zelle_lesen USING lo_blatt l_bet_col l_zeile
+                         CHANGING l_betrag l_meldung.
+    ENDIF.
+    IF l_meldung IS INITIAL AND
+       wa_import-wpn IS INITIAL AND l_betrag IS INITIAL.
+      CONTINUE.
+    ENDIF.
+    IF l_meldung IS INITIAL.
+      PERFORM importwerte_pruefen USING l_betrag
+                                 CHANGING wa_import l_meldung.
+    ENDIF.
+    IF l_meldung IS NOT INITIAL.
+      wa_import-status = 'FEHLER'.
+      wa_import-meldung = l_meldung.
+    ENDIF.
+    APPEND wa_import TO t_data.
+  ENDDO.
+ENDFORM.
+
+*----------------------------------------------------------------------*
+* Form importwerte_pruefen
+*----------------------------------------------------------------------*
+FORM importwerte_pruefen USING p_betrag TYPE string
+                            CHANGING ps_data TYPE ty_data
+                                     p_fehler TYPE string.
+  DATA: l_betrag TYPE decfloat34,
+        lo_error TYPE REF TO cx_root.
+
+  CLEAR p_fehler.
+  FIND REGEX '^[0-9]+$' IN ps_data-wpn.
+  IF sy-subrc NE 0.
+    p_fehler = 'WPN muss eine Ziffernfolge sein (keine Exponentialzahl).'.
+    RETURN.
+  ENDIF.
+* XLSX liefert numerische Werte mit Dezimalpunkt.
+  FIND REGEX '^[+-]?[0-9]+([.][0-9]{1,2})?$' IN p_betrag.
+  IF sy-subrc NE 0.
+    p_fehler = 'AEG Brutto: Dezimalpunkt und max. 2 Nachkommastellen.'.
+    RETURN.
+  ENDIF.
+  TRY.
+      l_betrag = p_betrag.
+      ps_data-betrag = l_betrag.
+    CATCH cx_root INTO lo_error.
+      p_fehler = lo_error->get_text( ).
+      RETURN.
+  ENDTRY.
+  IF ps_data-betrag EQ 0.
+    p_fehler = 'Nullbetrag nicht gebucht.'.
+  ENDIF.
+ENDFORM.
+
+*----------------------------------------------------------------------*
+* Form infotyp_lesen
+*----------------------------------------------------------------------*
+FORM infotyp_lesen USING VALUE(p_pernr) TYPE pernr_d
+                           VALUE(p_infty) TYPE infty
+                           VALUE(p_begda) TYPE sy-datum
+                           VALUE(p_endda) TYPE sy-datum
+                  CHANGING pt_daten TYPE STANDARD TABLE
+                           p_fehler TYPE string.
+  DATA l_rc TYPE sy-subrc.
+
+  REFRESH pt_daten.
+  CLEAR p_fehler.
+  CALL FUNCTION 'HR_READ_INFOTYPE'
+    EXPORTING
+      pernr         = p_pernr
+      infty         = p_infty
+      begda         = p_begda
+      endda         = p_endda
+      bypass_buffer = 'X'
+    IMPORTING
+      subrc         = l_rc
+    TABLES
+      infty_tab     = pt_daten
+    EXCEPTIONS
+      infty_not_found = 1
+      OTHERS          = 2.
+  IF sy-subrc NE 0 OR l_rc NE 0.
+    CONCATENATE 'IT' p_infty
+                ': Lesen fehlgeschlagen/keine Berechtigung.'
+           INTO p_fehler.
+  ENDIF.
+ENDFORM.
+
+*----------------------------------------------------------------------*
+* Form stammdaten_pruefen
+*----------------------------------------------------------------------*
+FORM stammdaten_pruefen CHANGING ps_data TYPE ty_data
+                                  p_fehler TYPE string.
+  DATA: lt_pernr TYPE SORTED TABLE OF pernr_d WITH UNIQUE KEY table_line,
+        l_wdid TYPE pa0105-usrid,
+        l_wdid_long TYPE pa0105-usrid_long,
+        lt_p0105 TYPE STANDARD TABLE OF p0105,
+        lt_p0000 TYPE STANDARD TABLE OF p0000,
+        lt_p0001 TYPE STANDARD TABLE OF p0001,
+        lt_p0015 TYPE STANDARD TABLE OF p0015,
+        l_folgetag TYPE sy-datum,
+        l_anzahl TYPE i,
+        l_treffer TYPE i.
+  DATA: wa_p0000 TYPE p0000,
+        wa_p0001 TYPE p0001,
+        l_rc TYPE sy-subrc.
+
+  CLEAR p_fehler.
+  CLEAR: ps_data-pernr, ps_data-datum, ps_data-werks, ps_data-btrtl,
+         ps_data-lgart, ps_data-waers.
+  IF ps_data-wpn IS INITIAL OR strlen( ps_data-wpn ) GT 30.
+    p_fehler = 'WPN fehlt/ist zu lang.'.
+    RETURN.
+  ENDIF.
+  l_wdid = ps_data-wpn.
+  l_wdid_long = ps_data-wpn.
+* SQL nur Kandidatensuche. Keine Stammdatenverwendung ohne HR-Lesepruefung.
+* Historische WDID-Saetze einschliessen, da ausgeschiedene Mitarbeiter.
+  SELECT DISTINCT pernr FROM pa0105 INTO TABLE lt_pernr
+    WHERE subty EQ 'WDID' AND sprps EQ space
+      AND ( usrid EQ l_wdid OR usrid_long EQ l_wdid_long ).
+  IF lines( lt_pernr ) NE 1.
+    p_fehler = 'WDID fehlt oder ist mehreren Personalnummern zugeordnet.'.
+    RETURN.
+  ENDIF.
+  READ TABLE lt_pernr INDEX 1 INTO ps_data-pernr.
+  PERFORM infotyp_lesen USING ps_data-pernr '0105' '18000101' '99991231'
+                         CHANGING lt_p0105 p_fehler.
+  IF p_fehler IS NOT INITIAL.
+    RETURN.
+  ENDIF.
+  LOOP AT lt_p0105 TRANSPORTING NO FIELDS
+    WHERE subty EQ 'WDID' AND sprps EQ space
+      AND ( usrid EQ l_wdid OR usrid_long EQ l_wdid_long ).
+    l_treffer = l_treffer + 1.
+  ENDLOOP.
+  IF l_treffer EQ 0.
+    p_fehler = 'WDID nicht berechtigt lesbar.'.
+    RETURN.
+  ENDIF.
+  PERFORM infotyp_lesen USING ps_data-pernr '0000' '18000101' p_keydt
+                         CHANGING lt_p0000 p_fehler.
+  IF p_fehler IS NOT INITIAL.
+    RETURN.
+  ENDIF.
+  DELETE lt_p0000 WHERE sprps NE space.
+* Zum Stichtag muss der Mitarbeiter ausgetreten sein (STAT2 = 0).
+  CLEAR l_anzahl.
+  LOOP AT lt_p0000 INTO wa_p0000
+    WHERE begda LE p_keydt AND endda GE p_keydt.
+    l_anzahl = l_anzahl + 1.
+    IF wa_p0000-stat2 NE '0'.
+      p_fehler = 'Am Stichtag nicht ausgetreten (STAT2 <> 0).'.
+      RETURN.
+    ENDIF.
+  ENDLOOP.
+  IF l_anzahl NE 1.
+    p_fehler = 'IT0000 am Stichtag fehlt/ist mehrdeutig.'.
+    RETURN.
+  ENDIF.
+* Letzter aktiver Kalendertag. Kein Arbeitstags-/Feiertagskalender.
+  LOOP AT lt_p0000 INTO wa_p0000 WHERE stat2 EQ '3' AND endda LT p_keydt.
+    IF wa_p0000-endda GT ps_data-datum.
+      ps_data-datum = wa_p0000-endda.
+    ENDIF.
+  ENDLOOP.
+  IF ps_data-datum IS INITIAL.
+    p_fehler = 'Kein letzter aktiver Tag vor Stichtag gefunden.'.
+    RETURN.
+  ENDIF.
+  l_folgetag = ps_data-datum + 1.
+  CLEAR l_anzahl.
+  LOOP AT lt_p0000 INTO wa_p0000
+    WHERE begda LE l_folgetag AND endda GE l_folgetag.
+    l_anzahl = l_anzahl + 1.
+    IF wa_p0000-stat2 NE '0'.
+      p_fehler = 'Auf letzten aktiven Tag folgt kein Austritt.'.
+      RETURN.
+    ENDIF.
+  ENDLOOP.
+  IF l_anzahl NE 1.
+    p_fehler = 'Austrittsbeginn fehlt/ist mehrdeutig.'.
+    RETURN.
+  ENDIF.
+  CLEAR l_anzahl.
+  LOOP AT lt_p0000 INTO wa_p0000
+    WHERE begda LE ps_data-datum AND endda GE ps_data-datum.
+    l_anzahl = l_anzahl + 1.
+    IF wa_p0000-stat2 NE '3'.
+      p_fehler = 'Buchungstag ist nicht aktiv.'.
+      RETURN.
+    ENDIF.
+  ENDLOOP.
+  IF l_anzahl NE 1.
+    p_fehler = 'Aktivstatus am Buchungstag nicht eindeutig.'.
+    RETURN.
+  ENDIF.
+  CLEAR l_anzahl.
+  LOOP AT lt_p0105 TRANSPORTING NO FIELDS
+    WHERE subty EQ 'WDID' AND sprps EQ space
+      AND begda LE ps_data-datum AND endda GE ps_data-datum
+      AND ( usrid EQ l_wdid OR usrid_long EQ l_wdid_long ).
+    l_anzahl = l_anzahl + 1.
+  ENDLOOP.
+  IF l_anzahl NE 1.
+    p_fehler = 'WDID am Buchungstag fehlt/ist mehrdeutig.'.
+    RETURN.
+  ENDIF.
+  PERFORM infotyp_lesen USING ps_data-pernr '0001' ps_data-datum ps_data-datum
+                         CHANGING lt_p0001 p_fehler.
+  IF p_fehler IS NOT INITIAL.
+    RETURN.
+  ENDIF.
+  DELETE lt_p0001 WHERE sprps NE space.
+  IF lines( lt_p0001 ) NE 1.
+    p_fehler = 'IT0001 am Buchungstag fehlt/ist mehrdeutig.'.
+    RETURN.
+  ENDIF.
+  READ TABLE lt_p0001 INDEX 1 INTO wa_p0001.
+  ps_data-werks = wa_p0001-werks.
+  ps_data-btrtl = wa_p0001-btrtl.
+  IF s_west[] IS NOT INITIAL AND wa_p0001-btrtl IN s_west.
+    ps_data-lgart = '6600'.
+  ENDIF.
+  IF s_ost[] IS NOT INITIAL AND wa_p0001-btrtl IN s_ost.
+    IF ps_data-lgart IS NOT INITIAL.
+      p_fehler = 'Personalteilbereich gleichzeitig West und Ost.'.
+      RETURN.
+    ENDIF.
+    ps_data-lgart = '6610'.
+  ENDIF.
+  IF ps_data-lgart IS INITIAL.
+    CONCATENATE 'Keine West/Ost-Zuordnung fuer' wa_p0001-werks wa_p0001-btrtl
+        INTO p_fehler SEPARATED BY space.
+    RETURN.
+  ENDIF.
+* Quelle enthaelt keine Waehrung; fachliche Annahme EUR.
+  ps_data-waers = 'EUR'.
+* Vorhandene Saetze auch mit anderem Betrag blockieren, niemals addieren.
+* Bei leerem IT0015 ist RC 4 regulaer. Fehler/Teilberechtigung nicht ignorieren.
+  CALL FUNCTION 'HR_READ_INFOTYPE'
+    EXPORTING pernr = ps_data-pernr infty = '0015'
+              begda = ps_data-datum endda = ps_data-datum bypass_buffer = 'X'
+    IMPORTING subrc = l_rc
+    TABLES infty_tab = lt_p0015
+    EXCEPTIONS infty_not_found = 1 OTHERS = 2.
+  IF sy-subrc NE 0 OR ( l_rc NE 0 AND l_rc NE 4 ).
+    p_fehler = 'IT0015 nicht vollstaendig berechtigt lesbar.'.
+    RETURN.
+  ENDIF.
+  LOOP AT lt_p0015 TRANSPORTING NO FIELDS WHERE lgart EQ ps_data-lgart.
+    p_fehler = 'IT0015 fuer Datum/Lohnart bereits vorhanden; manuell pruefen.'.
+    RETURN.
+  ENDLOOP.
+ENDFORM.
+
+*----------------------------------------------------------------------*
+* Form daten_pruefen
+*----------------------------------------------------------------------*
+FORM daten_pruefen.
+  DATA: l_index   TYPE sy-tabix,
+        l_meldung TYPE string,
+        lo_error  TYPE REF TO cx_root.
+
+  LOOP AT t_data INTO wa_data WHERE status IS INITIAL.
+    l_index = sy-tabix.
+    CLEAR l_meldung.
+    TRY.
+        PERFORM stammdaten_pruefen CHANGING wa_data l_meldung.
+      CATCH cx_root INTO lo_error.
+        l_meldung = lo_error->get_text( ).
+    ENDTRY.
+    IF l_meldung IS INITIAL.
+      wa_data-status = 'BEREIT'.
+      wa_data-meldung = 'Fachliche Vorpruefung erfolgreich.'.
+    ELSE.
+      wa_data-status = 'FEHLER'.
+      wa_data-meldung = l_meldung.
+    ENDIF.
+    MODIFY t_data FROM wa_data INDEX l_index.
+  ENDLOOP.
+ENDFORM.
+
+*----------------------------------------------------------------------*
+* Form dubletten_pruefen
+*----------------------------------------------------------------------*
+FORM dubletten_pruefen.
+  DATA: l_index  TYPE sy-tabix,
+        l_anzahl TYPE i.
+
+* Alle mehrfach vorkommenden Zielschluessel blockieren.
+  LOOP AT t_data INTO wa_data WHERE status EQ 'BEREIT'.
+    l_index = sy-tabix.
+    CLEAR l_anzahl.
+    LOOP AT t_data TRANSPORTING NO FIELDS
+      WHERE pernr EQ wa_data-pernr
+        AND datum EQ wa_data-datum
+        AND lgart EQ wa_data-lgart.
+      l_anzahl = l_anzahl + 1.
+    ENDLOOP.
+    IF l_anzahl GT 1.
+      wa_data-status = 'FEHLER'.
+      wa_data-meldung =
+        'Mehrere Excel-Zeilen fuer dieselbe PerNr/Datum/Lohnart.'.
+      MODIFY t_data FROM wa_data INDEX l_index.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+
+*----------------------------------------------------------------------*
+* Form daten_verarbeiten
+*----------------------------------------------------------------------*
+FORM daten_verarbeiten.
+  DATA l_index TYPE sy-tabix.
+
+  LOOP AT t_data INTO wa_data WHERE status EQ 'BEREIT'.
+    l_index = sy-tabix.
+    IF p_test IS NOT INITIAL.
+      wa_data-status = 'TEST'.
+      wa_data-meldung =
+        'Vorpruefung OK; keine Buchung, keine SAP-Schreibpruefung.'.
+    ELSE.
+      PERFORM personalnummer_buchen CHANGING wa_data.
+    ENDIF.
+    MODIFY t_data FROM wa_data INDEX l_index.
+  ENDLOOP.
+ENDFORM.
+
+*----------------------------------------------------------------------*
+* Form personalnummer_buchen
+*----------------------------------------------------------------------*
+FORM personalnummer_buchen CHANGING ps_data TYPE ty_data.
+  DATA: wa_return   TYPE bapireturn1,
+        wa_original TYPE ty_data,
+        l_gesperrt  TYPE c LENGTH 1,
+        l_meldung   TYPE string,
+        lo_error    TYPE REF TO cx_root.
+
+  wa_original = ps_data.
+  TRY.
+      CALL FUNCTION 'BAPI_EMPLOYEE_ENQUEUE'
+        EXPORTING
+          number = ps_data-pernr
+        IMPORTING
+          return = wa_return.
+      IF wa_return-type CA 'AEX'.
+        l_meldung = wa_return-message.
+        IF l_meldung IS INITIAL.
+          l_meldung = 'Personalnummer konnte nicht gesperrt werden.'.
+        ENDIF.
+      ELSE.
+        l_gesperrt = 'X'.
+* Stammdaten und Dubletten innerhalb der Mitarbeitersperre neu pruefen.
+        PERFORM stammdaten_pruefen CHANGING ps_data l_meldung.
+        IF l_meldung IS INITIAL.
+          IF ps_data-pernr NE wa_original-pernr OR
+             ps_data-datum NE wa_original-datum OR
+             ps_data-lgart NE wa_original-lgart OR
+             ps_data-btrtl NE wa_original-btrtl OR
+             ps_data-werks NE wa_original-werks.
+            l_meldung = 'Stammdaten seit Vorpruefung geaendert; neu starten.'.
+          ELSE.
+            PERFORM infotyp_verbuchen CHANGING ps_data l_meldung.
+          ENDIF.
+        ENDIF.
+      ENDIF.
+    CATCH cx_root INTO lo_error.
+      l_meldung = lo_error->get_text( ).
+  ENDTRY.
+
+  IF l_meldung IS NOT INITIAL.
+    ROLLBACK WORK.
+    ps_data-status = 'FEHLER'.
+    ps_data-meldung = l_meldung.
+  ENDIF.
+  IF l_gesperrt IS NOT INITIAL.
+    CALL FUNCTION 'BAPI_EMPLOYEE_DEQUEUE'
+      EXPORTING
+        number = wa_original-pernr.
+  ENDIF.
+  CALL FUNCTION 'HR_PSBUFFER_INITIALIZE'.
+ENDFORM.
+
+*----------------------------------------------------------------------*
+* Form infotyp_verbuchen
+*----------------------------------------------------------------------*
+FORM infotyp_verbuchen CHANGING ps_data TYPE ty_data
+                                 p_fehler TYPE string.
+  DATA: wa_p0015  TYPE p0015,
+        wa_return TYPE bapireturn1.
+
+  CLEAR: p_fehler, wa_p0015, wa_return.
+  wa_p0015-pernr = ps_data-pernr.
+  wa_p0015-infty = '0015'.
+  wa_p0015-subty = ps_data-lgart.
+  wa_p0015-lgart = ps_data-lgart.
+  wa_p0015-begda = ps_data-datum.
+  wa_p0015-endda = ps_data-datum.
+  wa_p0015-betrg = ps_data-betrag.
+  wa_p0015-waers = ps_data-waers.
+
+  CALL FUNCTION 'HR_INFOTYPE_OPERATION'
+    EXPORTING
+      infty         = '0015'
+      number        = wa_p0015-pernr
+      subtype       = wa_p0015-subty
+      validitybegin = wa_p0015-begda
+      validityend   = wa_p0015-endda
+      record        = wa_p0015
+      operation     = 'INS'
+      tclas         = 'A'
+      dialog_mode   = '0'
+      nocommit      = 'X'
+    IMPORTING
+      return        = wa_return
+    EXCEPTIONS
+      OTHERS        = 1.
+  IF sy-subrc NE 0 OR wa_return-type CA 'AEX'.
+    CONCATENATE 'IT0015 fehlgeschlagen:' wa_return-message
+           INTO p_fehler SEPARATED BY space.
+    RETURN.
+  ENDIF.
+
+  COMMIT WORK AND WAIT.
+  IF sy-subrc NE 0.
+    p_fehler = 'Update fehlgeschlagen; SM13 und PA20 pruefen.'.
+    RETURN.
+  ENDIF.
+  ps_data-status = 'GEBUCHT'.
+  CONCATENATE 'IT0015 angelegt.' wa_return-message
+         INTO ps_data-meldung SEPARATED BY space.
+ENDFORM.
+
+*----------------------------------------------------------------------*
+* Form alv_ausgabe
+*----------------------------------------------------------------------*
+FORM alv_ausgabe.
+  DATA: lo_alv        TYPE REF TO cl_salv_table,
+        lo_spalten    TYPE REF TO cl_salv_columns_table,
+        lo_funktionen TYPE REF TO cl_salv_functions_list,
+        lo_error      TYPE REF TO cx_root,
+        l_meldung     TYPE string.
+
+  TRY.
+      CALL METHOD cl_salv_table=>factory
+        IMPORTING
+          r_salv_table = lo_alv
+        CHANGING
+          t_table      = t_data.
+      lo_spalten = lo_alv->get_columns( ).
+      lo_spalten->set_optimize( abap_true ).
+      lo_funktionen = lo_alv->get_functions( ).
+      lo_funktionen->set_all( abap_true ).
+      lo_alv->display( ).
+    CATCH cx_root INTO lo_error.
+      l_meldung = lo_error->get_text( ).
+      MESSAGE l_meldung TYPE 'S' DISPLAY LIKE 'E'.
+  ENDTRY.
+ENDFORM.
