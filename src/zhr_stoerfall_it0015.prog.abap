@@ -432,4 +432,3 @@ START-OF-SELECTION.
     CATCH cx_root INTO DATA(unexpected).
       MESSAGE unexpected->get_text( ) TYPE 'S' DISPLAY LIKE 'E'.
   ENDTRY.
-
